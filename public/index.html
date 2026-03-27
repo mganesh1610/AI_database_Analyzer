@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Schema Atlas</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="backdrop backdrop-a"></div>
+    <div class="backdrop backdrop-b"></div>
+
+    <header class="topbar shell">
+      <div>
+        <p class="eyebrow">Local Read-Only Database Viewer</p>
+        <h1>Schema Atlas</h1>
+        <p class="subtitle">
+          Explore a MariaDB schema with relationship context, table anatomy,
+          and row-level browsing.
+        </p>
+      </div>
+      <div class="topbar-actions">
+        <div class="status-pill" id="connectionStatus">Disconnected</div>
+        <button class="ghost-button" id="focusConnectButton" type="button">Connection</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="sidebar shell">
+        <section class="section-stack">
+          <div class="section-title">
+            <h2>Connection</h2>
+            <span>Preset for your local schema</span>
+          </div>
+          <label>
+            Saved MySQL Shell Connection
+            <select id="savedConnectionSelect">
+              <option value="">Load a saved connection preset...</option>
+            </select>
+          </label>
+          <p class="muted" id="savedConnectionHint">
+            Reads connection metadata from your local MySQL Shell for VS Code profile.
+          </p>
+          <form id="connectForm" class="connection-form">
+            <label>
+              Host
+              <input id="host" name="host" type="text" autocomplete="off" />
+            </label>
+            <label>
+              Port
+              <input id="port" name="port" type="number" min="1" max="65535" />
+            </label>
+            <label>
+              User
+              <input id="user" name="user" type="text" autocomplete="username" />
+            </label>
+            <label>
+              Password
+              <input id="password" name="password" type="password" autocomplete="current-password" />
+            </label>
+            <label>
+              Database
+              <input id="database" name="database" type="text" autocomplete="off" />
+            </label>
+            <button class="primary-button" id="connectButton" type="submit">Connect To Schema</button>
+          </form>
+        </section>
+
+        <section class="section-stack">
+          <div class="section-title">
+            <h2>Schema Explorer</h2>
+            <span>Filter objects and jump across related structures</span>
+          </div>
+
+          <div class="toolbar stack-compact">
+            <input id="objectSearch" type="search" placeholder="Find tables, views, prefixes..." />
+            <div class="segmented-control">
+              <button class="segment is-active" data-object-filter="all" type="button"><span>All</span><span class="segment-count" id="filterCountAll">-</span></button>
+              <button class="segment" data-object-filter="tables" type="button"><span>Tables</span><span class="segment-count" id="filterCountTables">-</span></button>
+              <button class="segment" data-object-filter="views" type="button"><span>Views</span><span class="segment-count" id="filterCountViews">-</span></button>
+              <button class="segment" data-object-filter="inferred" type="button"><span>Inferred</span><span class="segment-count" id="filterCountInferred">-</span></button>
+            </div>
+            <div class="filter-summary" id="objectFilterSummary">
+              Connect to load the schema explorer.
+            </div>
+          </div>
+
+          <div class="object-list" id="objectList"></div>
+        </section>
+
+        <section class="section-stack">
+          <div class="section-title">
+            <h2>Schema Search</h2>
+            <span>Search tables and column names together</span>
+          </div>
+          <input id="globalSearch" type="search" placeholder="Search column names like author_id" />
+          <div class="search-results" id="searchResults"></div>
+        </section>
+      </aside>
+
+      <section class="main-column">
+        <section class="hero-grid">
+          <article class="shell metric-card">
+            <p class="metric-label">Objects</p>
+            <strong id="metricObjects">-</strong>
+            <span>Tables + views in the connected schema</span>
+          </article>
+          <article class="shell metric-card">
+            <p class="metric-label">Relationships</p>
+            <strong id="metricRelationships">-</strong>
+            <span>Foreign-key links discovered from metadata</span>
+          </article>
+          <article class="shell metric-card">
+            <p class="metric-label">Estimated Rows</p>
+            <strong id="metricRows">-</strong>
+            <span>Server-reported row estimates across the schema</span>
+          </article>
+          <article class="shell metric-card">
+            <p class="metric-label">Approx Size</p>
+            <strong id="metricSize">-</strong>
+            <span>Data + indexes in MB, where metadata is available</span>
+          </article>
+        </section>
+
+        <nav class="shell tabbar" aria-label="Main views">
+          <button class="tab-button is-active" data-tab="explorer" type="button">Explorer</button>
+          <button class="tab-button" data-tab="ask" type="button">Ask Atlas</button>
+          <button class="tab-button" data-tab="sql" type="button">SQL Lab</button>
+          <button class="tab-button" data-tab="guide" type="button">Guide</button>
+        </nav>
+
+        <section class="tab-panel is-active" data-panel="explorer">
+          <article class="shell object-hero">
+            <div>
+              <p class="eyebrow" id="objectTypeLabel">Select a table or view</p>
+              <h2 id="objectName">Waiting for connection</h2>
+              <p id="objectMeta" class="muted">
+                Connect to the database, then choose an object from the left-hand explorer.
+              </p>
+            </div>
+            <div class="mini-stats" id="objectStats"></div>
+          </article>
+
+          <article class="shell card row-browser priority-card">
+            <div class="card-header">
+              <div>
+                <h3>Table Data</h3>
+                <p>Search, sort, paginate, and export live rows from the selected object.</p>
+              </div>
+              <div class="row-toolbar">
+                <input id="rowSearch" type="search" placeholder="Search current object across visible columns" />
+                <select id="pageSizeSelect">
+                  <option value="25">25 rows</option>
+                  <option value="50" selected>50 rows</option>
+                  <option value="100">100 rows</option>
+                </select>
+                <button class="ghost-button" id="exportCsvButton" type="button">Export CSV</button>
+                <button class="ghost-button" id="exportJsonButton" type="button">Export JSON</button>
+              </div>
+            </div>
+            <div class="row-controls">
+              <div id="rowStatus" class="muted">Choose an object to browse its data.</div>
+              <div class="pagination">
+                <button class="ghost-button" id="previousPageButton" type="button">Previous</button>
+                <span id="pageLabel">Page 1</span>
+                <button class="ghost-button" id="nextPageButton" type="button">Next</button>
+              </div>
+            </div>
+            <div class="table-wrapper row-data-wrapper">
+              <table class="data-table" id="rowsTable"></table>
+            </div>
+          </article>
+
+          <section class="explorer-grid">
+            <div class="metadata-column">
+              <article class="shell card collapsible-card is-collapsed" data-panel-card="schema">
+                <div class="card-header">
+                  <div>
+                    <h3>Schema Anatomy</h3>
+                    <p>Column details, keys, defaults, and nullability.</p>
+                  </div>
+                  <div class="card-actions">
+                    <button class="ghost-button collapse-toggle" data-toggle-panel="schema" type="button" aria-expanded="false">
+                      Show
+                    </button>
+                    <button class="ghost-button" id="profileColumnButton" type="button">Profile Column</button>
+                  </div>
+                </div>
+                <div class="collapsible-body" id="schemaPanelBody" hidden>
+                  <div class="column-profile" id="columnProfile"></div>
+                  <div class="table-wrapper">
+                    <table class="data-table" id="columnsTable"></table>
+                  </div>
+                </div>
+              </article>
+            </div>
+
+            <div class="metadata-column metadata-column-side">
+              <article class="shell card collapsible-card is-collapsed" data-panel-card="relationships">
+                <div class="card-header">
+                  <div>
+                    <h3>Relationship Map</h3>
+                    <p>Incoming and outgoing links around the selected object.</p>
+                  </div>
+                  <div class="card-actions">
+                    <button class="ghost-button collapse-toggle" data-toggle-panel="relationships" type="button" aria-expanded="false">
+                      Show
+                    </button>
+                  </div>
+                </div>
+                <div class="collapsible-body" id="relationshipsPanelBody" hidden>
+                  <div id="relationshipMap" class="relationship-map empty-state">No object selected yet.</div>
+                </div>
+              </article>
+
+              <article class="shell card collapsible-card is-collapsed" data-panel-card="indexes">
+                <div class="card-header">
+                  <div>
+                    <h3>Indexes</h3>
+                    <p>Primary, unique, and supporting indexes.</p>
+                  </div>
+                  <div class="card-actions">
+                    <button class="ghost-button collapse-toggle" data-toggle-panel="indexes" type="button" aria-expanded="false">
+                      Show
+                    </button>
+                  </div>
+                </div>
+                <div class="collapsible-body" id="indexesPanelBody" hidden>
+                  <div class="table-wrapper">
+                    <table class="data-table" id="indexesTable"></table>
+                  </div>
+                </div>
+              </article>
+
+              <article class="shell card collapsible-card is-collapsed" data-panel-card="definition">
+                <div class="card-header">
+                  <div>
+                    <h3>Definition</h3>
+                    <p>DDL for the selected table or view.</p>
+                  </div>
+                  <div class="card-actions">
+                    <button class="ghost-button collapse-toggle" data-toggle-panel="definition" type="button" aria-expanded="false">
+                      Show
+                    </button>
+                  </div>
+                </div>
+                <div class="collapsible-body" id="definitionPanelBody" hidden>
+                  <pre class="code-block" id="definitionBlock"></pre>
+                </div>
+              </article>
+            </div>
+          </section>
+        </section>
+
+        <section class="tab-panel" data-panel="ask">
+          <section class="ask-grid">
+            <article class="shell card ask-card">
+              <div class="card-header">
+                <div>
+                  <h3>Ask Atlas</h3>
+                  <p>Use a local Ollama model to explain the connected schema and data through read-only tools only.</p>
+                </div>
+                <div class="card-actions">
+                  <div class="status-pill" id="llmStatusPill">Ollama status unknown</div>
+                  <button class="ghost-button" id="refreshModelsButton" type="button">Refresh Models</button>
+                </div>
+              </div>
+
+              <div class="ask-toolbar">
+                <label>
+                  Local Model
+                  <select id="llmModelSelect"></select>
+                </label>
+                <div class="ask-context" id="llmContextHint">
+                  Current object context: none selected
+                </div>
+              </div>
+
+              <div class="chat-transcript" id="chatTranscript">
+                <article class="chat-message assistant">
+                  <div class="chat-role">Ask Atlas</div>
+                  <div class="chat-bubble">
+                    Ask a plain-English question about the connected database. This assistant is read-only and will use local tools to inspect tables, inferred views, column profiles, and likely joins.
+                  </div>
+                </article>
+              </div>
+
+              <form class="chat-form" id="chatForm">
+                <label>
+                  Prompt
+                  <textarea
+                    id="chatInput"
+                    spellcheck="false"
+                    placeholder="Example: Which tables look related, and how confident are those joins?"
+                  ></textarea>
+                </label>
+                <div class="chat-actions">
+                  <button class="primary-button" id="chatSendButton" type="submit">Ask Atlas</button>
+                  <button class="ghost-button" id="chatClearButton" type="button">Clear Chat</button>
+                </div>
+              </form>
+            </article>
+
+            <article class="shell card semantic-card">
+              <div class="card-header">
+                <div>
+                  <h3>Semantic Search</h3>
+                  <p>Optional embedding index for schema notes and inferred mappings. Disabled by default.</p>
+                </div>
+              </div>
+
+              <div class="semantic-status" id="semanticStatus">
+                Semantic search is currently disabled. Schema Atlas is using direct tools, inferred views, and live read-only SQL instead.
+              </div>
+
+              <button class="ghost-button" id="buildSemanticIndexButton" type="button">
+                Build Local Index
+              </button>
+
+              <div class="semantic-build-info" id="semanticBuildInfo">
+                No local embedding index has been built in this app yet.
+              </div>
+
+              <form class="semantic-form" id="semanticSearchForm">
+                <label>
+                  Semantic Query
+                  <input
+                    id="semanticQuery"
+                    type="search"
+                    placeholder="Example: tables related to status, users, and events"
+                  />
+                </label>
+                <div class="chat-actions">
+                  <button class="ghost-button" id="semanticSearchButton" type="submit">Search Local Index</button>
+                </div>
+              </form>
+
+              <div class="search-results semantic-results" id="semanticResults">
+                <div class="empty-state">Build the local index to enable semantic retrieval over schema notes and inferred mappings.</div>
+              </div>
+
+              <div class="semantic-notes">
+                <div class="semantic-note">
+                  <strong>When enabled later</strong>
+                  <span>It will index schema snapshots, inferred notes, and database documentation, not write to the database.</span>
+                </div>
+                <div class="semantic-note">
+                  <strong>Why it is off now</strong>
+                  <span>The core read-only chat already works without embeddings, which is better for a schema without declared foreign keys.</span>
+                </div>
+              </div>
+            </article>
+          </section>
+        </section>
+
+        <section class="tab-panel" data-panel="sql">
+          <article class="shell card sql-card">
+            <div class="card-header">
+              <div>
+                <h3>SQL Lab</h3>
+                <p>Run read-only SQL against the connected database. Add a <code>LIMIT</code> for SELECT queries.</p>
+              </div>
+              <button class="ghost-button" id="loadSampleQueryButton" type="button">Load Sample Query</button>
+            </div>
+            <textarea id="sqlEditor" spellcheck="false">SHOW TABLES;</textarea>
+            <div class="sql-actions">
+              <button class="primary-button" id="runQueryButton" type="button">Run Query</button>
+              <span class="muted">Allowed: SELECT, SHOW, DESCRIBE, DESC, EXPLAIN, WITH</span>
+            </div>
+            <div id="sqlStatus" class="muted"></div>
+            <div class="table-wrapper">
+              <table class="data-table" id="sqlResultsTable"></table>
+            </div>
+          </article>
+        </section>
+
+        <section class="tab-panel" data-panel="guide">
+          <article class="shell guide-panel">
+            <h3>What This Viewer Is Good At</h3>
+            <div class="guide-grid">
+              <div>
+                <h4>Schema Understanding</h4>
+                <p>
+                  Use the explorer, relationship map, and DDL pane to understand how tables, views,
+                  and foreign keys fit together.
+                </p>
+              </div>
+              <div>
+                <h4>Data Inspection</h4>
+                <p>
+                  Browse live rows with search, sort, pagination, and export controls without writing
+                  custom SQL every time.
+                </p>
+              </div>
+              <div>
+                <h4>Column Profiling</h4>
+                <p>
+                  Profile a selected column to see null counts, distinct counts, and the most common
+                  values for quick sanity checks.
+                </p>
+              </div>
+              <div>
+                <h4>Safe Querying</h4>
+                <p>
+                  The SQL Lab is intentionally read-only, so it helps explore data without risking
+                  accidental changes.
+                </p>
+              </div>
+            </div>
+
+            <h3>Useful Investigation Flow</h3>
+            <ol class="guide-list">
+              <li>Connect using your own local MariaDB or MySQL credentials.</li>
+              <li>Pick a table from the explorer and inspect its columns and relationships.</li>
+              <li>Use Row Browser search and sort to see real data patterns.</li>
+              <li>Profile a high-signal column such as an ID, status, or timestamp.</li>
+              <li>Use SQL Lab for custom joins, counts, and one-off checks.</li>
+            </ol>
+          </article>
+        </section>
+      </section>
+    </main>
+
+    <div class="toast" id="toast"></div>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>
