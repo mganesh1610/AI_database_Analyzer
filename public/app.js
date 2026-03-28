@@ -36,6 +36,8 @@ const state = {
   selectionToken: 0
 };
 
+const captureConfig = parseCaptureConfig();
+
 const elements = {
   connectionStatus: document.querySelector("#connectionStatus"),
   connectForm: document.querySelector("#connectForm"),
@@ -106,6 +108,17 @@ const elements = {
 
 let toastTimer = null;
 
+function parseCaptureConfig() {
+  const params = new URLSearchParams(window.location.search);
+  return {
+    enabled: params.get("capture") === "1",
+    tab: params.get("tab") || "",
+    filter: params.get("filter") || "",
+    object: params.get("object") || "",
+    scroll: params.get("scroll") || ""
+  };
+}
+
 async function request(path, options = {}) {
   const response = await fetch(path, {
     headers: {
@@ -142,6 +155,9 @@ function escapeHtml(value) {
 }
 
 function showToast(message) {
+  if (captureConfig.enabled) {
+    return;
+  }
   elements.toast.textContent = message;
   elements.toast.classList.add("is-visible");
   window.clearTimeout(toastTimer);
@@ -193,6 +209,24 @@ function fillConnectionForm(connection) {
   elements.port.value = connection.port || 3306;
   elements.user.value = connection.user || "";
   elements.database.value = connection.database || "";
+}
+
+function setActiveTab(tabName) {
+  const nextTab = ["explorer", "ask", "sql", "guide"].includes(tabName) ? tabName : "explorer";
+  document.querySelectorAll(".tab-button").forEach((item) => {
+    item.classList.toggle("is-active", item.dataset.tab === nextTab);
+  });
+  document.querySelectorAll(".tab-panel").forEach((panel) => {
+    panel.classList.toggle("is-active", panel.dataset.panel === nextTab);
+  });
+}
+
+function setActiveFilter(filterName) {
+  const nextFilter = ["all", "tables", "views", "inferred"].includes(filterName) ? filterName : "all";
+  document.querySelectorAll("[data-object-filter]").forEach((item) => {
+    item.classList.toggle("is-active", item.dataset.objectFilter === nextFilter);
+  });
+  state.filter = nextFilter;
 }
 
 function renderSavedConnections(connections) {
@@ -1271,10 +1305,7 @@ async function runSql() {
 function bindTabs() {
   document.querySelectorAll(".tab-button").forEach((button) => {
     button.addEventListener("click", () => {
-      document.querySelectorAll(".tab-button").forEach((item) => item.classList.remove("is-active"));
-      document.querySelectorAll(".tab-panel").forEach((panel) => panel.classList.remove("is-active"));
-      button.classList.add("is-active");
-      document.querySelector(`[data-panel="${button.dataset.tab}"]`).classList.add("is-active");
+      setActiveTab(button.dataset.tab);
     });
   });
 }
@@ -1282,9 +1313,7 @@ function bindTabs() {
 function bindObjectFilters() {
   document.querySelectorAll("[data-object-filter]").forEach((button) => {
     button.addEventListener("click", async () => {
-      document.querySelectorAll("[data-object-filter]").forEach((item) => item.classList.remove("is-active"));
-      button.classList.add("is-active");
-      state.filter = button.dataset.objectFilter;
+      setActiveFilter(button.dataset.objectFilter);
       await loadObjects();
       if (state.selectedObject && !state.objects.some((item) => item.name === state.selectedObject)) {
         if (state.objects[0]?.name) {
@@ -1530,6 +1559,45 @@ async function hydrateConnectedView({ autoSelectFirst = false } = {}) {
   renderRowData();
 }
 
+async function applyCaptureConfig() {
+  if (!captureConfig.enabled) {
+    return;
+  }
+
+  document.body.classList.add("capture-mode");
+
+  if (captureConfig.filter) {
+    setActiveFilter(captureConfig.filter);
+    await loadObjects();
+  }
+
+  if (captureConfig.object) {
+    await loadSelectedObject(captureConfig.object);
+  }
+
+  if (captureConfig.tab) {
+    setActiveTab(captureConfig.tab);
+  }
+
+  const scrollTargets = {
+    hero: ".topbar",
+    object: ".object-hero",
+    rows: ".priority-card",
+    ask: ".ask-grid",
+    sql: ".sql-card",
+    guide: ".guide-panel",
+    explorer: ".section-stack:nth-of-type(2)",
+    semantic: "#semanticStatus"
+  };
+
+  const targetSelector = scrollTargets[captureConfig.scroll];
+  if (targetSelector) {
+    document.querySelector(targetSelector)?.scrollIntoView({ block: "start", behavior: "instant" });
+  } else {
+    window.scrollTo({ top: 0, behavior: "instant" });
+  }
+}
+
 async function initialize() {
   try {
     bindTabs();
@@ -1551,6 +1619,7 @@ async function initialize() {
       renderPanels();
       elements.sqlStatus.textContent = "Connect first, then run read-only SQL.";
     }
+    await applyCaptureConfig();
     renderSearchResults({ tables: [], columns: [] });
   } catch (error) {
     showToast(error.message);

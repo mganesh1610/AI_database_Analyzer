@@ -11,17 +11,32 @@
     <div class="backdrop backdrop-b"></div>
 
     <header class="topbar shell">
-      <div>
+      <div class="hero-copy">
         <p class="eyebrow">Local Read-Only Database Viewer</p>
         <h1>Schema Atlas</h1>
         <p class="subtitle">
           Explore a MariaDB schema with relationship context, table anatomy,
           and row-level browsing.
         </p>
+        <div class="hero-badges" aria-label="Schema Atlas capabilities">
+          <span class="hero-badge">Read-only guardrails</span>
+          <span class="hero-badge">Live schema anatomy</span>
+          <span class="hero-badge">Export-ready data slices</span>
+        </div>
       </div>
       <div class="topbar-actions">
-        <div class="status-pill" id="connectionStatus">Disconnected</div>
-        <button class="ghost-button" id="focusConnectButton" type="button">Connection</button>
+        <div class="hero-action-panel">
+          <div class="hero-action-copy">
+            <p class="hero-panel-label">Workspace Status</p>
+            <div class="status-pill" id="connectionStatus">Disconnected</div>
+          </div>
+          <button class="ghost-button" id="focusConnectButton" type="button">Connection</button>
+        </div>
+        <div class="hero-trust-strip" aria-label="Highlights">
+          <span>Safe SQL lab</span>
+          <span>Object profiling</span>
+          <span>Relationship context</span>
+        </div>
       </div>
     </header>
 
@@ -100,22 +115,22 @@
 
       <section class="main-column">
         <section class="hero-grid">
-          <article class="shell metric-card">
+          <article class="shell metric-card" data-metric-tone="blue">
             <p class="metric-label">Objects</p>
             <strong id="metricObjects">-</strong>
             <span>Tables + views in the connected schema</span>
           </article>
-          <article class="shell metric-card">
+          <article class="shell metric-card" data-metric-tone="teal">
             <p class="metric-label">Relationships</p>
             <strong id="metricRelationships">-</strong>
             <span>Foreign-key links discovered from metadata</span>
           </article>
-          <article class="shell metric-card">
+          <article class="shell metric-card" data-metric-tone="amber">
             <p class="metric-label">Estimated Rows</p>
             <strong id="metricRows">-</strong>
             <span>Server-reported row estimates across the schema</span>
           </article>
-          <article class="shell metric-card">
+          <article class="shell metric-card" data-metric-tone="slate">
             <p class="metric-label">Approx Size</p>
             <strong id="metricSize">-</strong>
             <span>Data + indexes in MB, where metadata is available</span>
