@@ -80,6 +80,8 @@ const elements = {
   rowsTable: document.querySelector("#rowsTable"),
   exportCsvButton: document.querySelector("#exportCsvButton"),
   exportJsonButton: document.querySelector("#exportJsonButton"),
+  exportAllJsonButton: document.querySelector("#exportAllJsonButton"),
+  exportExcelButton: document.querySelector("#exportExcelButton"),
   profileColumnButton: document.querySelector("#profileColumnButton"),
   columnProfile: document.querySelector("#columnProfile"),
   sqlEditor: document.querySelector("#sqlEditor"),
@@ -1331,6 +1333,29 @@ function bindObjectFilters() {
   });
 }
 
+function openExport(format, scope) {
+  if (!state.selectedObject) {
+    showToast("Pick an object before exporting.");
+    return;
+  }
+
+  const params = new URLSearchParams({
+    page: String(state.rowPage),
+    pageSize: String(Math.max(state.pageSize, 500)),
+    search: state.rowSearch,
+    sort: state.rowSort,
+    direction: state.rowDirection,
+    format,
+    scope
+  });
+
+  if (scope === "all") {
+    showToast(`Preparing ${format.toUpperCase()} export for all matching rows.`);
+  }
+
+  window.open(`/api/objects/${encodeURIComponent(state.selectedObject)}/export?${params.toString()}`, "_blank");
+}
+
 function bindEvents() {
   elements.focusConnectButton.addEventListener("click", () => {
     elements.password.focus();
@@ -1485,33 +1510,19 @@ function bindEvents() {
   });
 
   elements.exportCsvButton.addEventListener("click", () => {
-    if (!state.selectedObject) {
-      showToast("Pick an object before exporting.");
-      return;
-    }
-    const params = new URLSearchParams({
-      pageSize: String(Math.max(state.pageSize, 500)),
-      search: state.rowSearch,
-      sort: state.rowSort,
-      direction: state.rowDirection,
-      format: "csv"
-    });
-    window.open(`/api/objects/${encodeURIComponent(state.selectedObject)}/export?${params.toString()}`, "_blank");
+    openExport("csv", "page");
   });
 
   elements.exportJsonButton.addEventListener("click", () => {
-    if (!state.selectedObject) {
-      showToast("Pick an object before exporting.");
-      return;
-    }
-    const params = new URLSearchParams({
-      pageSize: String(Math.max(state.pageSize, 500)),
-      search: state.rowSearch,
-      sort: state.rowSort,
-      direction: state.rowDirection,
-      format: "json"
-    });
-    window.open(`/api/objects/${encodeURIComponent(state.selectedObject)}/export?${params.toString()}`, "_blank");
+    openExport("json", "page");
+  });
+
+  elements.exportAllJsonButton.addEventListener("click", () => {
+    openExport("json", "all");
+  });
+
+  elements.exportExcelButton.addEventListener("click", () => {
+    openExport("xlsx", "all");
   });
 
   elements.profileColumnButton.addEventListener("click", () => {

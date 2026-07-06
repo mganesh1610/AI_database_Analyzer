@@ -38,6 +38,8 @@ HOST = "127.0.0.1"
 PORT = int(os.getenv("PORT", "4040"))
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 OLLAMA_TIMEOUT_SECONDS = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "300"))
+EXPORT_ROW_LIMIT = max(1, int(os.getenv("ATLAS_EXPORT_ROW_LIMIT", "100000")))
+EXCEL_MAX_ROWS = 1_048_576
 CHAT_MESSAGE_LIMIT = 12
 CHAT_TOOL_LOOP_LIMIT = 6
 SEMANTIC_INDEX_VERSION = 1
@@ -1856,6 +1858,8 @@ def run_mysqlsh_sql(config: dict[str, Any], sql: str, timeout_seconds: int = 60)
         command,
         input=f"{config['password']}\n",
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         env=mysqlsh_env(),
         timeout=timeout_seconds,
@@ -1893,10 +1897,14 @@ def ensure_connected() -> None:
     connect_database(active_config)
 
 
-def query(sql: str, params: list[Any] | tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+def query(
+    sql: str,
+    params: list[Any] | tuple[Any, ...] = (),
+    timeout_seconds: int = 90,
+) -> list[dict[str, Any]]:
     ensure_connected()
     rendered_sql = format_sql(sql, params)
-    payload = run_mysqlsh_sql(active_config, rendered_sql, timeout_seconds=90)
+    payload = run_mysqlsh_sql(active_config, rendered_sql, timeout_seconds=timeout_seconds)
     return normalize_rows(payload.get("rows", []))
 
 
@@ -2154,26 +2162,105 @@ def get_column_profile(table_name: str, column_name: str) -> dict[str, Any]:
     return {"summary": summary, "topValues": top_values}
 
 
-def export_rows(table_name: str, fmt: str, options: dict[str, Any]) -> tuple[str, str]:
-    slice_payload = get_data_slice(
-        table_name,
-        {
-            **options,
-            "page": 1,
-            "pageSize": clamp_integer(options.get("pageSize"), 10, 5000, 500),
-        },
+def export_filename(table_name: str) -> str:
+    filename = re.sub(r"[^A-Za-z0-9_.-]+", "_", table_name).strip("._")
+    return filename or "schema-atlas-export"
+
+
+def excel_sheet_title(table_name: str) -> str:
+    title = re.sub(r"[:\\/?*\[\]]", "_", table_name).strip()
+    return (title or "Export")[:31]
+
+
+def excel_cell_value(value: Any) -> Any:
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return value
+
+
+def get_export_dataset(table_name: str, options: dict[str, Any], fmt: str) -> dict[str, Any]:
+    get_table_object(table_name)
+    columns = get_columns(table_name)
+    source_sql = get_object_source_sql(table_name)
+    scope = "all" if str(options.get("scope") or "").lower() == "all" else "page"
+    search = str(options.get("search") or "").strip()
+    direction = "DESC" if str(options.get("direction") or "").upper() == "DESC" else "ASC"
+    column_names = {column["name"] for column in columns}
+    default_sort = columns[0]["name"] if columns else ""
+    sort_column = options.get("sort") if options.get("sort") in column_names else default_sort
+    order_sql = f"ORDER BY {escape_identifier(sort_column)} {direction}" if sort_column else ""
+    where_sql, where_params = build_search_clause(columns, search)
+
+    if scope == "all":
+        format_limit = min(EXPORT_ROW_LIMIT, EXCEL_MAX_ROWS - 1) if fmt == "xlsx" else EXPORT_ROW_LIMIT
+        limit = clamp_integer(options.get("limit"), 1, format_limit, format_limit)
+        offset = 0
+        fetch_limit = limit + 1
+    else:
+        page = clamp_integer(options.get("page"), 1, 5000, 1)
+        page_size = clamp_integer(options.get("pageSize"), 10, 5000, 500)
+        offset = (page - 1) * page_size
+        limit = page_size
+        fetch_limit = page_size
+
+    rows = query(
+        f"""
+        SELECT *
+        FROM {source_sql}
+        {where_sql}
+        {order_sql}
+        LIMIT %s OFFSET %s
+        """,
+        [*where_params, fetch_limit, offset],
+        timeout_seconds=300,
     )
 
+    if scope == "all" and len(rows) > limit:
+        raise AppError(
+            413,
+            (
+                f"`{table_name}` matched more than {limit:,} rows. "
+                "Narrow the table search or raise ATLAS_EXPORT_ROW_LIMIT before exporting all rows."
+            ),
+        )
+
+    fieldnames = [column["name"] for column in columns] or (list(rows[0].keys()) if rows else [])
+    return {"fieldnames": fieldnames, "rows": rows, "scope": scope}
+
+
+def export_rows(table_name: str, fmt: str, options: dict[str, Any]) -> tuple[str, str | bytes, str]:
+    dataset = get_export_dataset(table_name, options, fmt)
+    fieldnames = dataset["fieldnames"]
+    rows = dataset["rows"]
+
     if fmt == "json":
-        return "application/json; charset=utf-8", json.dumps(slice_payload["rows"], indent=2)
+        return "application/json; charset=utf-8", json.dumps(rows, indent=2), "json"
+
+    if fmt == "xlsx":
+        try:
+            from openpyxl import Workbook
+        except ImportError as error:
+            raise AppError(500, "Excel export requires openpyxl. Run `pip install -r requirements.txt`.") from error
+
+        workbook = Workbook(write_only=True)
+        sheet = workbook.create_sheet(title=excel_sheet_title(table_name))
+        sheet.append(fieldnames)
+        for row in rows:
+            sheet.append([excel_cell_value(row.get(fieldname)) for fieldname in fieldnames])
+
+        buffer = io.BytesIO()
+        workbook.save(buffer)
+        return (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            buffer.getvalue(),
+            "xlsx",
+        )
 
     buffer = io.StringIO()
-    rows = slice_payload["rows"]
-    if rows:
-        writer = csv.DictWriter(buffer, fieldnames=list(rows[0].keys()))
-        writer.writeheader()
-        writer.writerows(rows)
-    return "text/csv; charset=utf-8", buffer.getvalue()
+    writer = csv.DictWriter(buffer, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(rows)
+    return "text/csv; charset=utf-8", buffer.getvalue(), "csv"
 
 
 def get_overview() -> dict[str, Any]:
@@ -2545,22 +2632,25 @@ def object_profile(table_name: str) -> Response:
 
 @app.get("/api/objects/<path:table_name>/export")
 def object_export(table_name: str) -> Response:
-    fmt = "json" if (request.args.get("format") or "").lower() == "json" else "csv"
-    content_type, body = export_rows(
+    requested_format = (request.args.get("format") or "").lower()
+    fmt = requested_format if requested_format in {"csv", "json", "xlsx"} else "csv"
+    content_type, body, extension = export_rows(
         table_name,
         fmt,
         {
+            "page": request.args.get("page"),
             "pageSize": request.args.get("pageSize"),
             "search": request.args.get("search"),
             "sort": request.args.get("sort"),
             "direction": request.args.get("direction"),
+            "scope": request.args.get("scope"),
+            "limit": request.args.get("limit"),
         },
     )
-    extension = "json" if fmt == "json" else "csv"
     return Response(
         body,
         mimetype=content_type,
-        headers={"Content-Disposition": f'attachment; filename="{table_name}.{extension}"'},
+        headers={"Content-Disposition": f'attachment; filename="{export_filename(table_name)}.{extension}"'},
     )
 
 
