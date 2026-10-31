@@ -47,9 +47,15 @@ python app.py
 
 Or from VS Code, run the `Start Schema Atlas` task.
 
-Open:
+Open the private link printed in the terminal when the app starts. It contains a new
+access token for this run. Keep that link private; opening the bare localhost URL
+does not grant access. The browser removes the token from the address bar and keeps
+it in the current tab session so exports can use the same authorization header.
 
-- [http://127.0.0.1:4040](http://127.0.0.1:4040)
+The optional `schema_snapshots/export_schema_snapshot.ps1` helper prompts for the
+access token. You can also set `ATLAS_ACCESS_TOKEN` to the printed token in the
+shell running that script. If the app uses a nondefault port, pass its `-BaseUrl`
+as a literal `http://127.0.0.1:<port>` address.
 
 ## Optional Local LLM Setup
 
@@ -73,10 +79,17 @@ If you keep private schema snapshots or notes locally, the semantic-search featu
 
 ## Safety Model
 
-- The backend is read-only by design.
-- The SQL Lab blocks write and DDL statements.
-- Ask Atlas only exposes curated read-only tools to the local model.
-- Even the LLM SQL tool is forced through the same read-only validator as SQL Lab.
+- Each app run requires its private token for every API request, including exports.
+- Use a database account with SELECT/SHOW-only grants and no FILE or routine-execution
+  privileges. The SQL Lab rejects known write and file-output syntax, but application
+  text checks cannot replace database permissions.
+- Ad hoc SELECT and WITH queries require one outer numeric LIMIT of at most 1,000 rows.
+  Add `LIMIT 1` to aggregate queries such as `SELECT COUNT(*)`.
+- API responses and database-client output have a 16 MiB ceiling. An all-row export
+  can stop at that byte limit before it reaches `ATLAS_EXPORT_ROW_LIMIT`; narrow the
+  search or export a smaller slice when this happens.
+- Ask Atlas gathers read-only context in application code. The local model receives
+  that context as data and does not receive or execute database tools.
 - Table browsing uses generated `SELECT` queries only.
 - Database access is executed through the local `mysqlsh` client.
 
@@ -85,3 +98,5 @@ If you keep private schema snapshots or notes locally, the semantic-search featu
 - MariaDB table statistics such as row counts can be estimates, depending on engine and server settings.
 - If your account cannot read some metadata objects, the app will still load the parts it can access.
 - The viewer can read saved MySQL Shell connection metadata from your local profile and prefill matching fields in the connection form.
+- The optional `scripts/capture_site.js` helper uses a private Chrome debugging pipe;
+  its former TCP debugging-port argument is no longer accepted.

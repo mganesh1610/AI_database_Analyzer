@@ -1,302 +1,203 @@
 const { spawn } = require('node:child_process');
-const crypto = require('node:crypto');
 const fs = require('node:fs');
-const http = require('node:http');
-const net = require('node:net');
+const os = require('node:os');
 const path = require('node:path');
 
-const chromePath = process.argv[2];
-const targetUrl = process.argv[3];
-const outputPath = process.argv[4];
-const width = Number(process.argv[5] || 1440);
-const height = Number(process.argv[6] || 2400);
-const debugPort = Number(process.argv[7] || 9222);
+const MAX_CDP_MESSAGE_BYTES = 32 * 1024 * 1024;
 
-if (!chromePath || !targetUrl || !outputPath) {
-  console.error('Usage: node scripts/capture_site.js <chromePath> <url> <outputPath> [width] [height] [debugPort]');
-  process.exit(1);
+function parseCliArgs(args) {
+  if (!args[0] || !args[1] || !args[2] || args[5] !== undefined) {
+    throw new Error('Usage: node scripts/capture_site.js <chromePath> <url> <outputPath> [width] [height]. TCP debugging ports are no longer supported.');
+  }
+  return {
+    chromePath: args[0],
+    targetUrl: args[1],
+    outputPath: args[2],
+    width: Number(args[3] || 1440),
+    height: Number(args[4] || 2400),
+  };
 }
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function httpJson(url, method = 'GET') {
-  return new Promise((resolve, reject) => {
-    const req = http.request(url, { method }, (res) => {
-      let data = '';
-      res.on('data', (chunk) => {
-        data += chunk;
-      });
-      res.on('end', () => {
-        try {
-          resolve(JSON.parse(data));
-        } catch (error) {
-          reject(new Error(`Failed to parse JSON from ${url}: ${error.message}`));
-        }
-      });
-    });
-    req.on('error', reject);
-    req.end();
+function waitForExit(browser, timeoutMs) {
+  if (browser.exitCode !== null || browser.signalCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const onExit = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      browser.off('exit', onExit);
+      resolve(false);
+    }, timeoutMs);
+    browser.once('exit', onExit);
   });
 }
 
-class DevToolsSocket {
-  constructor(wsUrl) {
-    const parsed = new URL(wsUrl);
-    this.host = parsed.hostname;
-    this.port = Number(parsed.port || 80);
-    this.path = parsed.pathname + parsed.search;
-    this.socket = null;
+class DevToolsPipe {
+  constructor(browser) {
+    this.input = browser.stdio[3];
+    this.output = browser.stdio[4];
     this.buffer = Buffer.alloc(0);
     this.pending = new Map();
-    this.nextId = 1;
     this.eventWaiters = new Map();
+    this.nextId = 1;
+    this.closed = false;
+
+    this.output.on('data', (chunk) => this.onData(chunk));
+    this.output.on('end', () => this.fail(new Error('Browser debugging pipe closed.')));
+    this.output.on('error', (error) => this.fail(error));
+    this.input.on('error', (error) => this.fail(error));
+    browser.on('error', (error) => this.fail(error));
+    browser.on('exit', () => this.fail(new Error('Browser exited before capture completed.')));
   }
 
-  async connect() {
-    this.socket = net.createConnection({ host: this.host, port: this.port });
-    await new Promise((resolve, reject) => {
-      this.socket.once('error', reject);
-      this.socket.once('connect', resolve);
-    });
-
-    this.socket.on('data', (chunk) => this.onData(chunk));
-    this.socket.on('error', (error) => {
-      for (const pending of this.pending.values()) {
-        pending.reject(error);
+  fail(error) {
+    if (this.closed) return;
+    this.closed = true;
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    }
+    this.pending.clear();
+    for (const waiters of this.eventWaiters.values()) {
+      for (const waiter of waiters) {
+        clearTimeout(waiter.timer);
+        waiter.reject(error);
       }
-      this.pending.clear();
-    });
-
-    const key = crypto.randomBytes(16).toString('base64');
-    const request =
-      `GET ${this.path} HTTP/1.1\r\n` +
-      `Host: ${this.host}:${this.port}\r\n` +
-      `Upgrade: websocket\r\n` +
-      `Connection: Upgrade\r\n` +
-      `Sec-WebSocket-Key: ${key}\r\n` +
-      `Sec-WebSocket-Version: 13\r\n\r\n`;
-
-    this.socket.write(request, 'utf8');
-    await this.readHandshake();
-  }
-
-  async readHandshake() {
-    while (!this.buffer.includes('\r\n\r\n')) {
-      await sleep(10);
     }
-    const boundary = this.buffer.indexOf('\r\n\r\n');
-    const header = this.buffer.subarray(0, boundary).toString('utf8');
-    if (!header.includes('101 Switching Protocols')) {
-      throw new Error(`WebSocket handshake failed: ${header}`);
-    }
-    this.buffer = this.buffer.subarray(boundary + 4);
-    this.processFrames();
+    this.eventWaiters.clear();
   }
 
   onData(chunk) {
     this.buffer = Buffer.concat([this.buffer, chunk]);
-    this.processFrames();
-  }
-
-  processFrames() {
-    while (true) {
-      if (this.buffer.length < 2) {
+    if (this.buffer.length > MAX_CDP_MESSAGE_BYTES) {
+      this.fail(new Error('Browser debugging response exceeded the size limit.'));
+      return;
+    }
+    let boundary;
+    while ((boundary = this.buffer.indexOf(0)) !== -1) {
+      const raw = this.buffer.subarray(0, boundary);
+      this.buffer = this.buffer.subarray(boundary + 1);
+      if (!raw.length) continue;
+      let message;
+      try {
+        message = JSON.parse(raw.toString('utf8'));
+      } catch {
+        this.fail(new Error('Browser sent an invalid debugging response.'));
         return;
       }
-
-      const first = this.buffer[0];
-      const second = this.buffer[1];
-      const opcode = first & 0x0f;
-      let offset = 2;
-      let payloadLength = second & 0x7f;
-
-      if (payloadLength === 126) {
-        if (this.buffer.length < offset + 2) {
-          return;
-        }
-        payloadLength = this.buffer.readUInt16BE(offset);
-        offset += 2;
-      } else if (payloadLength === 127) {
-        if (this.buffer.length < offset + 8) {
-          return;
-        }
-        const high = this.buffer.readUInt32BE(offset);
-        const low = this.buffer.readUInt32BE(offset + 4);
-        payloadLength = high * 2 ** 32 + low;
-        offset += 8;
-      }
-
-      const masked = (second & 0x80) !== 0;
-      let mask;
-      if (masked) {
-        if (this.buffer.length < offset + 4) {
-          return;
-        }
-        mask = this.buffer.subarray(offset, offset + 4);
-        offset += 4;
-      }
-
-      if (this.buffer.length < offset + payloadLength) {
-        return;
-      }
-
-      let payload = this.buffer.subarray(offset, offset + payloadLength);
-      this.buffer = this.buffer.subarray(offset + payloadLength);
-
-      if (masked) {
-        const unmasked = Buffer.alloc(payload.length);
-        for (let index = 0; index < payload.length; index += 1) {
-          unmasked[index] = payload[index] ^ mask[index % 4];
-        }
-        payload = unmasked;
-      }
-
-      if (opcode === 0x8) {
-        this.socket.end();
-        return;
-      }
-
-      if (opcode !== 0x1) {
-        continue;
-      }
-
-      const message = JSON.parse(payload.toString('utf8'));
-      if (message.id && this.pending.has(message.id)) {
+      if (message.id !== undefined && this.pending.has(message.id)) {
         const pending = this.pending.get(message.id);
         this.pending.delete(message.id);
+        clearTimeout(pending.timer);
         if (message.error) {
-          pending.reject(new Error(message.error.message || JSON.stringify(message.error)));
+          pending.reject(new Error(message.error.message || 'Browser command failed.'));
         } else {
-          pending.resolve(message.result);
+          pending.resolve(message.result || {});
         }
         continue;
       }
-
-      if (message.method && this.eventWaiters.has(message.method)) {
-        const waiters = this.eventWaiters.get(message.method);
-        this.eventWaiters.delete(message.method);
+      const key = `${message.sessionId || ''}:${message.method || ''}`;
+      const waiters = this.eventWaiters.get(key);
+      if (waiters) {
+        this.eventWaiters.delete(key);
         for (const waiter of waiters) {
-          waiter(message.params || {});
+          clearTimeout(waiter.timer);
+          waiter.resolve(message.params || {});
         }
       }
     }
   }
 
-  send(method, params = {}) {
-    const id = this.nextId;
-    this.nextId += 1;
-    const message = JSON.stringify({ id, method, params });
-    const payload = Buffer.from(message, 'utf8');
-    const mask = crypto.randomBytes(4);
-    let header;
-
-    if (payload.length < 126) {
-      header = Buffer.alloc(2);
-      header[1] = 0x80 | payload.length;
-    } else if (payload.length < 65536) {
-      header = Buffer.alloc(4);
-      header[1] = 0x80 | 126;
-      header.writeUInt16BE(payload.length, 2);
-    } else {
-      header = Buffer.alloc(10);
-      header[1] = 0x80 | 127;
-      header.writeUInt32BE(0, 2);
-      header.writeUInt32BE(payload.length, 6);
-    }
-
-    header[0] = 0x81;
-    const maskedPayload = Buffer.alloc(payload.length);
-    for (let index = 0; index < payload.length; index += 1) {
-      maskedPayload[index] = payload[index] ^ mask[index % 4];
-    }
-
-    this.socket.write(Buffer.concat([header, mask, maskedPayload]));
-
+  send(method, params = {}, sessionId = null, timeoutMs = 30000) {
+    if (this.closed) return Promise.reject(new Error('Browser debugging pipe is closed.'));
+    const id = this.nextId++;
+    const message = { id, method, params };
+    if (sessionId) message.sessionId = sessionId;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`Timed out waiting for ${method}.`));
+      }, timeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
+      this.input.write(`${JSON.stringify(message)}\0`, 'utf8', (error) => {
+        if (error && this.pending.has(id)) {
+          this.pending.delete(id);
+          clearTimeout(timer);
+          reject(error);
+        }
+      });
     });
   }
 
-  waitFor(method, timeoutMs = 15000) {
+  waitFor(method, sessionId, timeoutMs = 15000) {
+    const key = `${sessionId || ''}:${method}`;
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`Timed out waiting for ${method}`));
+      const timer = setTimeout(() => {
+        this.eventWaiters.set(key, (this.eventWaiters.get(key) || []).filter((item) => item !== waiter));
+        reject(new Error(`Timed out waiting for ${method}.`));
       }, timeoutMs);
-      const waiter = (params) => {
-        clearTimeout(timeout);
-        resolve(params);
-      };
-      const existing = this.eventWaiters.get(method) || [];
-      existing.push(waiter);
-      this.eventWaiters.set(method, existing);
+      const waiter = { resolve, reject, timer };
+      this.eventWaiters.set(key, [...(this.eventWaiters.get(key) || []), waiter]);
     });
   }
 
   close() {
-    if (this.socket) {
-      this.socket.end();
-    }
+    this.input.end();
+    this.fail(new Error('Browser debugging pipe closed.'));
   }
 }
 
-async function waitForDebugger(port) {
-  const url = `http://127.0.0.1:${port}/json/version`;
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    try {
-      return await httpJson(url);
-    } catch {
-      await sleep(100);
-    }
+async function captureSite({ chromePath, targetUrl, outputPath, width = 1440, height = 2400, spawnBrowser = spawn }) {
+  if (!chromePath || !targetUrl || !outputPath) {
+    throw new Error('Chrome path, URL, and output path are required.');
   }
-  throw new Error('Chrome debugger did not start in time.');
-}
-
-async function main() {
-  const userDataDir = path.join(process.cwd(), '.chrome-headless');
-  fs.mkdirSync(userDataDir, { recursive: true });
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || width > 10000 || height > 10000) {
+    throw new Error('Width and height must be integers between 1 and 10000.');
+  }
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'schema-atlas-capture-'));
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-
-  const chrome = spawn(
+  const chrome = spawnBrowser(
     chromePath,
     [
       '--headless=new',
       '--disable-gpu',
-      '--no-sandbox',
+      '--disable-background-networking',
       '--hide-scrollbars',
       '--disable-crash-reporter',
       '--no-first-run',
       '--no-default-browser-check',
-      `--remote-debugging-port=${debugPort}`,
+      '--remote-debugging-pipe',
       `--user-data-dir=${userDataDir}`,
       'about:blank',
     ],
-    {
-      stdio: 'ignore',
-      detached: false,
-    },
+    { stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'], detached: false },
   );
+  const client = new DevToolsPipe(chrome);
 
   try {
-    const version = await waitForDebugger(debugPort);
-    const target = await httpJson(`http://127.0.0.1:${debugPort}/json/new?${encodeURIComponent(targetUrl)}`, 'PUT');
-    const client = new DevToolsSocket(target.webSocketDebuggerUrl);
-    await client.connect();
-
-    await client.send('Page.enable');
-    await client.send('Runtime.enable');
+    const version = await client.send('Browser.getVersion');
+    const { targetId } = await client.send('Target.createTarget', { url: 'about:blank' });
+    const { sessionId } = await client.send('Target.attachToTarget', { targetId, flatten: true });
+    await client.send('Page.enable', {}, sessionId);
+    await client.send('Runtime.enable', {}, sessionId);
     await client.send('Emulation.setDeviceMetricsOverride', {
       width,
       height,
       deviceScaleFactor: 1,
       mobile: false,
-    });
-    await client.send('Page.navigate', { url: targetUrl });
-    await client.waitFor('Page.loadEventFired', 15000);
+    }, sessionId);
+    await Promise.all([
+      client.waitFor('Page.loadEventFired', sessionId),
+      client.send('Page.navigate', { url: targetUrl }, sessionId),
+    ]);
     await sleep(1000);
 
-    const metrics = await client.send('Page.getLayoutMetrics');
+    const metrics = await client.send('Page.getLayoutMetrics', {}, sessionId);
     const contentSize = metrics.cssContentSize || metrics.contentSize || { width, height };
     const screenshot = await client.send('Page.captureScreenshot', {
       format: 'png',
@@ -304,22 +205,41 @@ async function main() {
       clip: {
         x: 0,
         y: 0,
-        width: Math.max(contentSize.width, width),
-        height: Math.max(contentSize.height, height),
+        width: Math.min(Math.max(contentSize.width, width), 10000),
+        height: Math.min(Math.max(contentSize.height, height), 10000),
         scale: 1,
       },
-    });
+    }, sessionId);
 
     fs.writeFileSync(outputPath, Buffer.from(screenshot.data, 'base64'));
-    client.close();
     console.log(`Saved screenshot to ${outputPath}`);
-    console.log(`Debugger browser: ${version.Browser}`);
+    console.log(`Debugger browser: ${version.product || version.Browser || 'Chrome'}`);
   } finally {
-    chrome.kill();
+    client.close();
+    if (chrome.exitCode === null && chrome.signalCode === null) {
+      const exited = waitForExit(chrome, 3000);
+      chrome.kill();
+      if (!(await exited) && chrome.exitCode === null && chrome.signalCode === null) {
+        const forcedExit = waitForExit(chrome, 2000);
+        chrome.kill('SIGKILL');
+        await forcedExit;
+      }
+    }
+    fs.rmSync(userDataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }
 
-main().catch((error) => {
-  console.error(error.message || error);
-  process.exit(1);
-});
+if (require.main === module) {
+  try {
+    const options = parseCliArgs(process.argv.slice(2));
+    captureSite(options).catch((error) => {
+      console.error(error.message || error);
+      process.exitCode = 1;
+    });
+  } catch (error) {
+    console.error(error.message || error);
+    process.exitCode = 1;
+  }
+}
+
+module.exports = { captureSite, parseCliArgs };
