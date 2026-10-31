@@ -19,7 +19,7 @@ const state = {
   semanticResults: [],
   semanticBuildBusy: false,
   semanticSearchBusy: false,
-  objectCache: {},
+  objectCache: Object.create(null),
   rowsLoading: false,
   sectionLoading: {
     schema: false,
@@ -1463,7 +1463,7 @@ function bindEvents() {
           database: elements.database.value
         })
       });
-      state.objectCache = {};
+      state.objectCache = Object.create(null);
       state.selectedObject = null;
       state.objectSummary = null;
       state.dataSlice = null;

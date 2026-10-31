@@ -39,6 +39,9 @@ Install dependencies:
 python -m pip install -r requirements.txt
 ```
 
+The requirements file pins the tested Python dependency set. Dependabot checks
+Python packages and GitHub Actions weekly for updates.
+
 Start the app:
 
 ```powershell
@@ -100,3 +103,15 @@ If you keep private schema snapshots or notes locally, the semantic-search featu
 - The viewer can read saved MySQL Shell connection metadata from your local profile and prefill matching fields in the connection form.
 - The optional `scripts/capture_site.js` helper uses a private Chrome debugging pipe;
   its former TCP debugging-port argument is no longer accepted.
+
+## Security Checks
+
+Before committing, install [Gitleaks](https://github.com/gitleaks/gitleaks) and
+[pre-commit](https://pre-commit.com/), then run `pre-commit install` once in this
+checkout. The hook checks staged changes for secrets.
+
+GitHub runs full-history Gitleaks and Trivy scans on pushes, pull requests, and
+a weekly schedule. Trivy scans the exact Python package versions in
+`requirements.txt`; it does not check the host's installed MySQL Shell, Chrome,
+or Ollama. GitHub CodeQL, secret scanning, push protection, and Dependabot
+alerts are also enabled in repository settings.
