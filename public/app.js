@@ -19,7 +19,7 @@ const state = {
   semanticResults: [],
   semanticBuildBusy: false,
   semanticSearchBusy: false,
-  objectCache: Object.create(null),
+  objectCache: new Map(),
   rowsLoading: false,
   sectionLoading: {
     schema: false,
@@ -531,17 +531,17 @@ function getObjectCache(name) {
   if (!name) {
     return null;
   }
-  if (!state.objectCache[name]) {
-    state.objectCache[name] = {
+  if (!state.objectCache.has(name)) {
+    state.objectCache.set(name, {
       summary: null,
       schema: null,
       relationships: null,
       indexes: null,
       definition: null,
       dataSlices: {}
-    };
+    });
   }
-  return state.objectCache[name];
+  return state.objectCache.get(name);
 }
 
 function getSelectedCache() {
@@ -1463,7 +1463,7 @@ function bindEvents() {
           database: elements.database.value
         })
       });
-      state.objectCache = Object.create(null);
+      state.objectCache = new Map();
       state.selectedObject = null;
       state.objectSummary = null;
       state.dataSlice = null;
