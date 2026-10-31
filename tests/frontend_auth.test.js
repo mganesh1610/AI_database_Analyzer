@@ -61,3 +61,11 @@ test('a bare localhost page cannot call the API', async () => {
   await assert.rejects(vm.runInContext('apiFetch("/api/health")', frontend.context), /private Schema Atlas launch link/);
   assert.equal(frontend.requests.length, 0);
 });
+
+test('database object names cannot pollute inherited JavaScript properties', () => {
+  const frontend = loadFrontend();
+  vm.runInContext('getObjectCache("__proto__").summary = { name: "first" }; getObjectCache("constructor").summary = { name: "second" }', frontend.context);
+  assert.equal(vm.runInContext('({}).summary', frontend.context), undefined);
+  assert.equal(vm.runInContext('getObjectCache("__proto__").summary.name', frontend.context), 'first');
+  assert.equal(vm.runInContext('getObjectCache("constructor").summary.name', frontend.context), 'second');
+});
