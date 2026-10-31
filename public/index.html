@@ -275,7 +275,7 @@
               <div class="card-header">
                 <div>
                   <h3>Ask Atlas</h3>
-                  <p>Use a local Ollama model to explain the connected schema and data through read-only tools only.</p>
+                  <p>Use a local Ollama model to explain read-only schema and data context gathered by Schema Atlas.</p>
                 </div>
                 <div class="card-actions">
                   <div class="status-pill" id="llmStatusPill">Ollama status unknown</div>
@@ -297,7 +297,7 @@
                 <article class="chat-message assistant">
                   <div class="chat-role">Ask Atlas</div>
                   <div class="chat-bubble">
-                    Ask a plain-English question about the connected database. This assistant is read-only and will use local tools to inspect tables, inferred views, column profiles, and likely joins.
+                    Ask a plain-English question about the connected database. Schema Atlas gathers read-only context before sending it to the local model; the model does not run database tools.
                   </div>
                 </article>
               </div>
@@ -327,7 +327,7 @@
               </div>
 
               <div class="semantic-status" id="semanticStatus">
-                Semantic search is currently disabled. Schema Atlas is using direct tools, inferred views, and live read-only SQL instead.
+                Semantic search is currently disabled. Schema Atlas gathers direct read-only context and inferred views instead.
               </div>
 
               <button class="ghost-button" id="buildSemanticIndexButton" type="button">

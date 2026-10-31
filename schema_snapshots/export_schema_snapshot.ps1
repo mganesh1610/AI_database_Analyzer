@@ -1,10 +1,26 @@
 param(
   [string]$OutputPath = ".\\schema_snapshots\\local_schema_snapshot.json",
-  [string]$SchemaName = ""
+  [string]$SchemaName = "",
+  [string]$BaseUrl = "http://127.0.0.1:4040"
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+$AccessToken = $env:ATLAS_ACCESS_TOKEN
+if (-not $AccessToken) {
+  $secureToken = Read-Host "Access token from the private Schema Atlas launch link" -AsSecureString
+  $AccessToken = [System.Net.NetworkCredential]::new("", $secureToken).Password
+}
+if (-not $AccessToken) {
+  throw "A Schema Atlas access token is required."
+}
+$atlasHeaders = @{ Authorization = "Bearer $AccessToken" }
+$atlasUri = [Uri]$BaseUrl
+if ($atlasUri.Scheme -ne "http" -or $atlasUri.Host -ne "127.0.0.1" -or $atlasUri.AbsolutePath -ne "/" -or $atlasUri.Query -or $atlasUri.Fragment) {
+  throw "BaseUrl must be a literal http://127.0.0.1 address with an optional port."
+}
+$BaseUrl = $BaseUrl.TrimEnd("/")
 
 function Invoke-AtlasSql {
   param(
@@ -13,7 +29,7 @@ function Invoke-AtlasSql {
   )
 
   $body = @{ sql = $Sql } | ConvertTo-Json
-  $response = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:4040/api/sql/query" -ContentType "application/json" -Body $body
+  $response = Invoke-RestMethod -Method Post -Uri "$BaseUrl/api/sql/query" -Headers $atlasHeaders -ContentType "application/json" -Body $body
   return $response.rows
 }
 
@@ -42,7 +58,7 @@ function Invoke-AtlasPagedSql {
   return $rows
 }
 
-$health = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/health"
+$health = Invoke-RestMethod -Uri "$BaseUrl/api/health" -Headers $atlasHeaders
 if (-not $health.ok) {
   throw "Schema Atlas is not responding."
 }
@@ -54,8 +70,9 @@ if (-not $SchemaName) {
 if (-not $SchemaName) {
   throw "SchemaName was not provided and Schema Atlas is not connected to a database."
 }
+$schemaLiteral = $SchemaName.Replace("'", "''")
 
-$tables = Invoke-AtlasSql @"
+$tables = Invoke-AtlasPagedSql @"
 SELECT
   TABLE_NAME,
   TABLE_TYPE,
@@ -67,9 +84,8 @@ SELECT
   CREATE_TIME,
   UPDATE_TIME
 FROM information_schema.TABLES
-WHERE TABLE_SCHEMA = '$SchemaName'
+WHERE TABLE_SCHEMA = '$schemaLiteral'
 ORDER BY TABLE_TYPE, TABLE_NAME
-LIMIT 1000
 "@
 
 $columns = Invoke-AtlasPagedSql @"
@@ -83,11 +99,11 @@ SELECT
   COLUMN_KEY,
   EXTRA
 FROM information_schema.COLUMNS
-WHERE TABLE_SCHEMA = '$SchemaName'
+WHERE TABLE_SCHEMA = '$schemaLiteral'
 ORDER BY TABLE_NAME, ORDINAL_POSITION
 "@
 
-$indexes = Invoke-AtlasSql @"
+$indexes = Invoke-AtlasPagedSql @"
 SELECT
   TABLE_NAME,
   INDEX_NAME,
@@ -96,32 +112,29 @@ SELECT
   NON_UNIQUE,
   INDEX_TYPE
 FROM information_schema.STATISTICS
-WHERE TABLE_SCHEMA = '$SchemaName'
+WHERE TABLE_SCHEMA = '$schemaLiteral'
 ORDER BY TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX
-LIMIT 10000
 "@
 
-$relationships = Invoke-AtlasSql @"
+$relationships = Invoke-AtlasPagedSql @"
 SELECT
   TABLE_NAME,
   COLUMN_NAME,
   REFERENCED_TABLE_NAME,
   CONSTRAINT_NAME
 FROM information_schema.KEY_COLUMN_USAGE
-WHERE TABLE_SCHEMA = '$SchemaName'
+WHERE TABLE_SCHEMA = '$schemaLiteral'
   AND REFERENCED_TABLE_NAME IS NOT NULL
 ORDER BY TABLE_NAME, CONSTRAINT_NAME, COLUMN_NAME
-LIMIT 5000
 "@
 
-$views = Invoke-AtlasSql @"
+$views = Invoke-AtlasPagedSql @"
 SELECT
   TABLE_NAME,
   VIEW_DEFINITION
 FROM information_schema.VIEWS
-WHERE TABLE_SCHEMA = '$SchemaName'
+WHERE TABLE_SCHEMA = '$schemaLiteral'
 ORDER BY TABLE_NAME
-LIMIT 1000
 "@
 
 $snapshot = [ordered]@{

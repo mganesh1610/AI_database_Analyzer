@@ -36,6 +36,7 @@ const state = {
   selectionToken: 0
 };
 
+const accessToken = loadAccessToken();
 const captureConfig = parseCaptureConfig();
 
 const elements = {
@@ -110,6 +111,25 @@ const elements = {
 
 let toastTimer = null;
 
+function loadAccessToken() {
+  const fragment = new URLSearchParams(window.location.hash.slice(1));
+  const token = fragment.get("access_token");
+  if (token) {
+    try {
+      window.sessionStorage.setItem("schema-atlas-access-token", token);
+    } catch {
+      // The current tab can still use the token when storage is unavailable.
+    }
+    window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    return token;
+  }
+  try {
+    return window.sessionStorage.getItem("schema-atlas-access-token") || "";
+  } catch {
+    return "";
+  }
+}
+
 function parseCaptureConfig() {
   const params = new URLSearchParams(window.location.search);
   return {
@@ -121,12 +141,18 @@ function parseCaptureConfig() {
   };
 }
 
-async function request(path, options = {}) {
+async function apiFetch(path, options = {}) {
+  if (!accessToken) {
+    throw new Error("Open the private Schema Atlas launch link printed in the terminal.");
+  }
   const response = await fetch(path, {
+    ...options,
+    cache: "no-store",
     headers: {
-      "Content-Type": "application/json"
-    },
-    ...options
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+      Authorization: `Bearer ${accessToken}`
+    }
   });
 
   if (!response.ok) {
@@ -139,6 +165,12 @@ async function request(path, options = {}) {
     }
     throw new Error(message);
   }
+
+  return response;
+}
+
+async function request(path, options = {}) {
+  const response = await apiFetch(path, options);
 
   const contentType = response.headers.get("content-type") || "";
   if (contentType.includes("application/json")) {
@@ -1333,7 +1365,7 @@ function bindObjectFilters() {
   });
 }
 
-function openExport(format, scope) {
+async function openExport(format, scope) {
   if (!state.selectedObject) {
     showToast("Pick an object before exporting.");
     return;
@@ -1353,7 +1385,17 @@ function openExport(format, scope) {
     showToast(`Preparing ${format.toUpperCase()} export for all matching rows.`);
   }
 
-  window.open(`/api/objects/${encodeURIComponent(state.selectedObject)}/export?${params.toString()}`, "_blank");
+  const response = await apiFetch(`/api/objects/${encodeURIComponent(state.selectedObject)}/export?${params.toString()}`);
+  const blobUrl = URL.createObjectURL(await response.blob());
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const filename = disposition.match(/filename="([^"]+)"/)?.[1] || `schema-atlas-export.${format}`;
+  const link = document.createElement("a");
+  link.href = blobUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
 }
 
 function bindEvents() {
@@ -1510,19 +1552,19 @@ function bindEvents() {
   });
 
   elements.exportCsvButton.addEventListener("click", () => {
-    openExport("csv", "page");
+    openExport("csv", "page").catch((error) => showToast(error.message));
   });
 
   elements.exportJsonButton.addEventListener("click", () => {
-    openExport("json", "page");
+    openExport("json", "page").catch((error) => showToast(error.message));
   });
 
   elements.exportAllJsonButton.addEventListener("click", () => {
-    openExport("json", "all");
+    openExport("json", "all").catch((error) => showToast(error.message));
   });
 
   elements.exportExcelButton.addEventListener("click", () => {
-    openExport("xlsx", "all");
+    openExport("xlsx", "all").catch((error) => showToast(error.message));
   });
 
   elements.profileColumnButton.addEventListener("click", () => {
@@ -1611,6 +1653,11 @@ async function applyCaptureConfig() {
 
 async function initialize() {
   try {
+    if (!accessToken) {
+      elements.connectionStatus.textContent = "Private launch link required";
+      elements.sqlStatus.textContent = "Open the private Schema Atlas link printed in the terminal running the app.";
+      return;
+    }
     bindTabs();
     bindObjectFilters();
     bindEvents();
